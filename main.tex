@@ -76,13 +76,13 @@
 \begin{description}
 \item[Spark:] a data analysis framework
 
-(like ROOT, but with different strengths and weaknesses).
+{\small (like ROOT, but with different strengths and weaknesses).}
 
 \vspace{0.5 cm}
 
 \item[Scala:] Spark's native language, used as a command prompt
 
-(the way that C++ is used for ROOT).
+{\small (the way that C++ is used in ROOT).}
 \end{description}
 \end{frame}
 
@@ -92,6 +92,7 @@
 \item $\sim$half hour Scala exercises
 \item 5 minute talk on Spark
 \item $\sim$hour and a half Spark exercises in Scala
+\item 10 minute intro to Histogrammar
 \end{enumerate}
 \end{frame}
 
@@ -131,11 +132,11 @@
 \begin{frame}{What happens in the compilation step?}
 \begin{itemize}
 \item Whole program is interpreted and turned into machine instructions (possibly for a virtual machine).
-\item All variables are interpreted as belonging to specific types: {\tt int}, {\tt string}, {\tt MissileController}\ldots
+\item All variables are interpreted as belonging to specific types: {\tt \small int}, {\tt \small string}, {\tt \small MissileController}\ldots
 \item Uses of these variables are checked for validity:
 \begin{itemize}
-\item can't pass a {\tt MissileController} into the cosine function;
-\item can't call {\tt launchAllMissiles()} on a {\tt string}.
+\item can't pass a {\tt \small MissileController} into the cosine function;
+\item can't call {\tt \small launchAllMissiles()} on a {\tt \small string}.
 \end{itemize}
 \end{itemize}
 
@@ -203,7 +204,7 @@ Interpreted languages do none of these things; you find out about misuses of var
 
 \begin{itemize}
 \item Apache Hadoop
-\item {\only<1>{Apache Spark}\only<2>{\bf Apache Spark}}
+\item {\only<1>{Apache Spark}\only<2>{\bf \textcolor{red}{Apache Spark}}}
 \item Google TensorFlow
 \end{itemize}
 
@@ -213,7 +214,7 @@ Interpreted languages do none of these things; you find out about misuses of var
 \item Elasticsearch
 \item Apache Impala
 \item Apache Drill
-\item {\only<1>{Spark-SQL}\only<2>{\bf Spark-SQL}}
+\item {\only<1>{Spark-SQL}\only<2>{\bf \textcolor{red}{Spark-SQL}}}
 \end{itemize}
 
 \textcolor{darkblue}{Data pipelines:}
@@ -229,7 +230,7 @@ Interpreted languages do none of these things; you find out about misuses of var
 \begin{itemize}
 \item Apache Storm
 \item Apache Flink
-\item {\only<1>{Spark-Streaming}\only<2>{\bf Spark-Streaming}}
+\item {\only<1>{Spark-Streaming}\only<2>{\bf \textcolor{red}{Spark-Streaming}}}
 \end{itemize}
 
 \textcolor{darkblue}{Cluster infrastructures:}
@@ -244,7 +245,7 @@ Interpreted languages do none of these things; you find out about misuses of var
 \begin{itemize}
 \item Scikit-Learn
 \item Apache Mahout
-\item {\only<1>{Spark MLlib}\only<2>{\bf Spark MLlib}}
+\item {\only<1>{Spark MLlib}\only<2>{\bf \textcolor{red}{Spark MLlib}}}
 \end{itemize}
 \end{columns}
 
@@ -287,7 +288,7 @@ Spark became an Apache project and Databricks founded. In 2014, Spark won record
 \begin{frame}{}
 \begin{columns}
 \column{0.65\linewidth}
-Spark's specialty: caching data in RAM for iterative fits.
+\textcolor{darkblue}{Spark's specialty:} caching data in RAM for iterative fits.
 
 \vspace{0.2 cm}
 Hadoop (and every other distributed batch system I've heard of) has to load data from disk for each pass.
@@ -311,7 +312,7 @@ Beyond this killer app, Spark was designed for exploratory data analysis; Hadoop
 Functional programming style is common among data analysts using R (inherited from Scheme).
 
 \vspace{0.2 cm}
-Scala's object orientation lets us chain functors without nesting.
+\uncover<2->{Scala's object orientation lets us chain functors without nesting.}
 
 \vspace{0.2 cm}
 \begin{columns}
@@ -325,6 +326,17 @@ for (i = 0;  i < nEvents;  i++) {
 }
 \end{lstlisting}
 \column{0.42\linewidth}
+\begin{onlyenv}<1>
+\begin{lstlisting}[language=python,frame=single]
+
+output = 
+  map(calculation,
+    filter(condition,
+                events))
+
+\end{lstlisting}
+\end{onlyenv}
+\begin{onlyenv}<2->
 \begin{lstlisting}[language=python,frame=single]
 
 output =
@@ -333,13 +345,16 @@ output =
 
 
 \end{lstlisting}
+\end{onlyenv}
 \end{columns}
 
+\begin{uncoverenv}<3->
 \begin{itemize}
 \item The ``map'' functor {\it says less} than ``for''--- it doesn't specify an order in which events must be processed.
 \item Underlying system can distribute and collect however it likes.
 \item Also hides index arithmetic from the user: datasets can be spliced automatically.
 \end{itemize}
+\end{uncoverenv}
 \end{frame}
 
 \begin{frame}{``Monad-like'' functional primitives:}
