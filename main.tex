@@ -20,6 +20,7 @@
 \usepackage{listings}
 \usepackage{courier}
 \usepackage{array}
+\usepackage{dirtree}
 
 \title[2016-05-11-scala-spark]{Scala and Spark Tutorial}
 \author{Jim Pivarski}
@@ -398,17 +399,423 @@ Summarizing an ntuple using a counter, summation, or histogram.
 \end{center}
 \end{frame}
 
-
-
-
-
-
-
-
 \begin{frame}{}
 \begin{center}
 \Huge \textcolor{darkblue}{Spark Exercises}
 \end{center}
+\end{frame}
+
+\begin{frame}[fragile]{Histogrammar}
+We want to avoid downloading the whole dataset to a laptop for a traditional ntuple-analysis.
+
+\vspace{0.5 cm}
+Spark has a functional for reducing data in a distributed way:
+
+\begin{center}
+\tt \small RDD.aggregate(initialize)(increment, combine)
+\end{center}
+
+where
+\begin{itemize}
+\item {\tt \small RDD} is a collection of data of type $\mathcal{D}$ (end of skimming chain)
+\item {\tt \small initialize} creates a counter of type $\mathcal{C}$
+\item {\tt \small increment} is a function from $(\mathcal{C},\mathcal{D}) \to \mathcal{C}$
+\item {\tt \small combine} is a function from $(\mathcal{C},\mathcal{C}) \to \mathcal{C}$
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Aggregate functional}
+
+\begin{center}
+\tt \small RDD.aggregate(initialize)(increment, combine)
+\end{center}
+
+\vfill
+\includegraphics[width=\linewidth]{aggregate.pdf}
+
+\vfill
+(Hadoop equivalent: reduce; \hspace{0.25 cm} SQL equivalent: ``{\tt GROUP BY}'')
+\end{frame}
+
+\begin{frame}[fragile]{Histograms fit naturally into aggregate}
+
+\begin{lstlisting}[language=scala]
+// hypothetical import ROOT
+import org.dianahep.scaroot.classes.TH1F
+
+val finalHist = RDD.aggregate(
+    // "booking"
+    new TH1F("pt", "pt", 100, 0, 20))(
+    // "filling"
+    {(h, d) => h.Fill(sqrt(d.px**2 + d.py**2)); h},
+    // "merging"
+    {(h1, h2) => h1.Add(h2); h1})
+\end{lstlisting}
+
+\uncover<2>{\begin{block}{}
+\vspace{-\baselineskip}
+Not bad, but what if you want to fill more than one histogram?
+
+\begin{itemize}
+\item These are {\it functions:} all histograms must be passed in as arguments and collected as return values ({\tt \small h} and {\tt \small h1} above).
+\item No global state because Spark is distributed.
+\item Data analyst has to maintain histogram code in three places.
+\end{itemize}
+\end{block}}
+\end{frame}
+
+\begin{frame}[fragile]{First idea:}
+\textcolor{darkblue}{\large Move the logic of histogram-filling into the booking stage.}
+
+\begin{lstlisting}[language=scala]
+val h = Histogram("pt", 100, 0, 20,
+                  {d => sqrt(d.px**2 + d.py**2)})
+\end{lstlisting}
+
+\vspace{-\baselineskip} \hfill $\underbrace{\mbox{\hspace{6.0 cm}}}_{\mbox{``fill rule'' } {\displaystyle f: \mathcal{D} \to \mathbb{R}}}$ \hspace{0.7 cm}
+
+\vfill
+This functional design allows the filling and merging to be automatic: no user input required.
+
+\begin{lstlisting}[language=scala]
+RDD.aggregate(h)(auto_increment(), auto_combine())
+\end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]{Second idea:}
+\textcolor{darkblue}{\large Collect histograms into a container that also has automated filling and merging.}
+
+\begin{lstlisting}[language=scala]
+val pack_o_histograms = Label(
+      "pt" -> Histogram(100, 0, 20, fill_pt),
+      "Emiss" -> Histogram(100, 0, 50, fill_Emiss),
+      ...)
+
+RDD.aggregate(pack_o_histograms)(auto_increment(),
+                                 auto_combine())
+\end{lstlisting}
+
+\vfill
+({\tt \small Label} and {\tt \small Histogram} share a superclass; {\tt \small auto\_increment()} and {\tt \small auto\_combine()} call them the same way.)
+\end{frame}
+
+\begin{frame}[fragile]{Third idea:}
+\vspace{0.5 cm}
+\textcolor{darkblue}{\large Let all of these pieces be composable.}
+
+\begin{lstlisting}[language=scala]
+val directories =
+      Label("dir1" ->
+                Label("pt" -> Histogram(...),
+                      "Emiss" -> Histogram(...)),
+            "dir2" ->
+                Label("pass" -> Count(...),
+                      "maxpt" -> Maximize(...)))
+\end{lstlisting}
+
+\vspace{1.5 cm}
+(Combining directories of histograms is similar to ROOT's {\tt \small hadd}.)
+\end{frame}
+
+\begin{frame}[fragile]{}
+\textcolor{darkblue}{\large Notice that histograms themselves can be decomposed into smaller pieces:}
+
+\begin{lstlisting}[language=scala]
+val histogram = Histogram(100, 0, 20, fill_rule)
+val histogram = Bin(100, 0, 20, fill_rule, Count())
+\end{lstlisting}
+
+where
+\begin{itemize}
+\item {\tt \small Count} is an aggregator that counts events;
+\item {\tt \small Bin} is an aggregator that makes 100 sub-aggregators and uses {\tt \small fill\_rule} to decide which one to pass the data on to, just as {\tt \small Label} passes the data on to all of its contents.
+\end{itemize}
+
+\vspace{0.5 cm}
+\begin{uncoverenv}<2->
+We get two-dimensional histograms for free:
+\begin{lstlisting}[language=scala]
+val hist2d = Bin(binsX, lowX, highX, fillX,
+                   Bin(binsY, lowY, highY, fillY, Count()))
+\end{lstlisting}
+\end{uncoverenv}
+\vspace{-1.5 cm}
+\end{frame}
+
+\begin{frame}[fragile]{}
+\vspace{0.5 cm}
+With the right sub-aggregators, we can get profile plots:
+\begin{lstlisting}[language=scala]
+val profile = Bin(binsX, lowX, highX, fillX,
+                                  Deviate(fillY))
+  // "Deviate" accumulates mean & std deviation
+\end{lstlisting}
+
+Box-and-whisker plots:
+\begin{lstlisting}[language=scala]
+val box_whiskers = Bin(binsX, lowX, highX, fillX,
+                         Branch(Quantile(fillY),
+                                Minimize(fillY),
+                                Maximize(fillY)))
+  // "Quantile" accumulates median & quartiles
+  // "Branch" makes a tree of subaggregators
+\end{lstlisting}
+
+Heatmaps (average per bin, not a two-dimensional histogram):
+\begin{lstlisting}[language=scala]
+val heatmap = Bin(binsX, lowX, highX, fillX,
+                    Bin(binsY, lowY, fillY,
+                          Average()))
+  // "Average" accumulates a mean only
+\end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]{}
+\textcolor{darkblue}{\large Mix and match with alternate binning schemes:}
+
+\vspace{0.5 cm}
+Fill a hashmap instead of an array:
+\begin{lstlisting}[language=scala]
+val unknown_support =
+      SparselyBin(binWidth, fillX, Count())
+  // "SparselyBin" creates subaggregators as needed
+\end{lstlisting}
+
+Non-uniform bins:
+\begin{lstlisting}[language=scala]
+val partitions_like_clustering =
+      CentrallyBin(binCenters, fillX, Count())
+val completely_arbitrary_bins =
+      IrregularlyBin(binRanges, fillX, Count())
+\end{lstlisting}
+
+Use a clustering algorithm to find bin centers:
+\begin{lstlisting}[language=scala]
+val first_look = AdaptivelyBin(fillX, Count())
+
+val violin_plot = Bin(binsX, lowX, highX, fillX,
+                      AdaptivelyBin(fillY, Count())
+\end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]{}
+\textcolor{darkblue}{\large Similarly for super-histogram structures:}
+
+\vspace{0.5 cm}
+\begin{lstlisting}[language=scala]
+val efficiency = Fraction(cut, Histogram(...))
+\end{lstlisting}
+where {\tt \small cut} is a function from $\mathcal{D} \to$ bool; two identical histograms are booked, one (denominator) is filled with all events, the other (numerator) only if it passes the cut.
+
+\vfill
+\begin{lstlisting}[language=scala]
+val stack = Stack(q, cuts, Histogram(...))
+\end{lstlisting}
+where {\tt \small q} is a function from $\mathcal{D} \to \mathbb{R}$ and {\tt \small cuts} are successively tighter thresholds; $N_{\mbox{\scriptsize cuts}} + 1$ histograms are created.
+
+\vfill
+\begin{lstlisting}[language=scala]
+val partition = Partition(q, cuts, Histogram(...))
+\end{lstlisting}
+Histograms now represent data {\it between} cuts (think of centrality bins in heavy ion plots).
+\end{frame}
+
+\begin{frame}[fragile]{}
+\textcolor{darkblue}{\large Categorical features, too:}
+
+\vfill
+Fill rule maps from $\mathcal{D} \to$ string:
+\begin{lstlisting}[language=scala]
+val bar_chart = Categorize(fillType, Count())
+\end{lstlisting}
+Order of categories on the axis can be imposed {\it after} aggregation. The data are accumulated in a hashmap.
+
+\vfill
+\begin{lstlisting}[language=scala]
+val backgrounds =
+     Categorize({d => d.eventType},
+       Histogram(120, 0, 120, {d => d.dimuonMass}))
+\end{lstlisting}
+
+Stacking order can also be imposed {\it after} aggregation.
+\end{frame}
+
+\begin{frame}{}
+\textcolor{darkblue}{\large A whole analysis can be a tree of nested histogram primitives with lambda functions at each level.}
+
+\vfill
+\dirtree{%
+.1 {\tt \small Label}.
+.2 {\tt \small "trigger thresholds"}.
+.3 {\tt \small Stack} $\to$ {\tt \small Fraction} $\to$ {\tt \small Bin} $\to$ {\tt \small Count}.
+.2 {\tt \small "cut scan"}.
+.3 {\tt \small Stack} $\to$ {\tt \small Label}.
+.4 {\tt \small "a vs b"} $\to$ {\tt \small Bin} $\to$ {\tt \small Deviate}.
+.4 {\tt \small "b vs c"} $\to$ {\tt \small Bin} $\to$ {\tt \small Deviate}.
+.2 {\tt \small "pT windows"}.
+.3 {\tt \small Partition} $\to$ {\tt \small Label}.
+.4 {\tt \small "a"} $\to$ {\tt \small Bin} $\to$ {\tt \small Count}.
+.4 {\tt \small "b"} $\to$ {\tt \small Bin} $\to$ {\tt \small Count}.
+}
+
+\vfill
+Can answer questions like, ``which cuts were applied in this plot?'' by walking the tree, rather than scanning a {\tt \small for} loop for {\tt \small break} statements by eye.
+\end{frame}
+
+\begin{frame}{Implementation}
+I started implementing this grammar to see if it makes sense.
+
+\begin{center}
+\textcolor{blue}{\url{http://github.com/diana-hep/histogrammar/}}
+\end{center}
+
+(with an ``a,'' get it?)
+\end{frame}
+
+\begin{frame}{}
+\vfill
+\begin{minipage}{\linewidth}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{l c c c | l c c}
+Primitive & Scala & Python & C++ & Primitive & Scala & Python \\\hline
+{\bf \scriptsize Count}       & $\surd$ & $\surd$ & $\surd$ & {\bf \scriptsize CentrallyBin}    & $\surd$ & $\surd$ \\
+{\bf \scriptsize Sum}         & $\surd$ & $\surd$ &      & {\bf \scriptsize AdaptivelyBin}   & $\surd$ & $\surd$ \\
+{\bf \scriptsize Average}     & $\surd$ & $\surd$ &      & {\bf \scriptsize Fraction}        & $\surd$ & $\surd$ \\    
+{\bf \scriptsize Deviate}     & $\surd$ & $\surd$ &      & {\bf \scriptsize Stack}           & $\surd$ & $\surd$ \\
+{\bf \scriptsize AbsoluteErr} & $\surd$ & $\surd$ &      & {\bf \scriptsize Partition}       & $\surd$ & $\surd$ \\
+{\bf \scriptsize Minimize}    & $\surd$ & $\surd$ &      & {\bf \scriptsize Categorize}      & $\surd$ & $\surd$ \\
+{\bf \scriptsize Maximize}    & $\surd$ & $\surd$ &      & {\bf \scriptsize Limit}           & $\surd$ & $\surd$ \\
+{\bf \scriptsize Quantile}    & $\surd$ & $\surd$ &      & {\bf \scriptsize Label}           & $\surd$ & $\surd$ \\
+{\bf \scriptsize Bag}         & $\surd$ & $\surd$ &      & {\bf \scriptsize UntypedLabel}    & $\surd$ & $\surd$ \\
+{\bf \scriptsize Bin}         & $\surd$ & $\surd$ & $\surd$ & {\bf \scriptsize Index}           & $\surd$ & $\surd$ \\
+{\bf \scriptsize SparselyBin} & $\surd$ & $\surd$ &      & {\bf \scriptsize Branch}          & $\surd$ & $\surd$ \\
+\end{tabular}
+\end{minipage}
+
+\vspace{0.5 cm}
+Shared JSON representation so primitives can be freely exchanged.
+
+\vfill
+CUDA is next, along with hooks to popular plotting frameworks.
+\end{frame}
+
+\begin{frame}[fragile]{Example Spark session}
+\begin{lstlisting}[language=scala]
+import org.dianahep.histogrammar._
+import org.dianahep.histogrammar.histogram._
+
+// declare histograms
+val px_histogram = Histogram(100, -5, 5,
+  {mu: Muon => mu.px})
+val pt_histogram = Histogram(80, 0, 8,
+  {mu: Muon => sqrt(mu.px**2 + mu.py**2)})
+val cut_histogram = Histogram(100, -5, 5,
+  {mu: Muon => mu.px}, {mu: Muon => mu.py < 0})
+
+// wrap them up in a collection
+val all_histograms = Label("px" -> px_histogram,
+  "pt" -> pt_histogram, "cut" -> cut_histogram)
+
+// fill them in Spark
+val final_result = rdd.aggregate(all_histograms)
+      (new Increment, new Combine)
+\end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]{Example Spark session}
+\begin{lstlisting}[language=scala]
+all_histograms("pt").entries     // 0
+final_result("pt").entries       // 100000
+\end{lstlisting}
+
+\begin{uncoverenv}<2->
+\begin{lstlisting}[language=scala]
+println(final_result("pt").ascii)
+\end{lstlisting}
+\tiny
+\begin{verbatim}
+                        0                                                   6616.50
+                        +---------------------------------------------------------+
+underflow          0    |                                                         |
+[  0    ,  0.100)  506  |****                                                     |
+[  0.100,  0.200)  1420 |************                                             |
+[  0.200,  0.300)  2424 |*********************                                    |
+[  0.300,  0.400)  3356 |*****************************                            |
+[  0.400,  0.5  )  4258 |*************************************                    |
+[  0.5  ,  0.600)  4688 |****************************************                 |
+[  0.600,  0.700)  5262 |*********************************************            |
+[  0.700,  0.800)  5805 |**************************************************       |
+[  0.800,  0.900)  5855 |**************************************************       |
+[  0.900,  1    )  6015 |****************************************************     |
+[  1    ,  1.10 )  5977 |***************************************************      |
+[  1.10 ,  1.20 )  5940 |***************************************************      |
+[  1.20 ,  1.30 )  5763 |**************************************************       |
+[  1.30 ,  1.40 )  5463 |***********************************************          |
+[  1.40 ,  1.5  )  5009 |*******************************************              |
+[  1.5  ,  1.60 )  4676 |****************************************                 |
+[  1.60 ,  1.70 )  4226 |************************************                     |
+[  1.70 ,  1.80 )  3743 |********************************                         |
+[  1.80 ,  1.90 )  3226 |****************************                             |
+[  1.90 ,  2    )  2911 |*************************                                |
+[  2    ,  2.10 )  2449 |*********************                                    |
+...
+\end{verbatim}
+\end{uncoverenv}
+\end{frame}
+
+\begin{frame}[fragile]{In Python\ldots}
+\begin{lstlisting}[language=python]
+th1f = final_result("pt").TH1F("name", "title")
+th1f.Draw()
+# because "import ROOT" didn't raise an ImportError
+\end{lstlisting}
+
+\includegraphics[width=\linewidth]{root_th1f.png}
+\end{frame}
+
+\begin{frame}{Histogrammar does not produce graphics}
+\textcolor{darkblue}{\large (The ASCII art histogram is a placeholder/debugging/fun.)}
+
+\vfill
+Although any combination of the primitives can be aggregated and used in an analysis, special combinations like {\tt Bin(Count)} are recognized as plottable.
+
+\vfill
+Histogrammar should link to external packages, such as Matplotlib and ROOT, to do the actual plotting.
+\begin{itemize}
+\item Minimal codebase to reimplement in a variety of languages;
+\item More of a clearinghouse than a software product, connecting systems that iterate over data to systems that plot data.
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+\vspace{0.3 cm}
+\hspace{-0.5 cm}\begin{minipage}{\linewidth}
+\tiny
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{| p{0.1\linewidth} p{0.9\linewidth} |}\hline
+Count           & Count data, ignoring their content. (Actually a sum of weights.) \\\hline
+Sum             & Accumulate the sum of a given quantity. \\
+Average         & Accumulate the weighted mean of a given quantity. \\
+Deviate         & Accumulate a weighted variance, mean, and total weight of a given quantity (using an algorithm that is stable for large numbers). \\
+AbsoluteErr     & Accumulate the weighted Mean Absolute Error (MAE) of a quantity whose nominal value is zero. \\
+Minimize        & Find the minimum value of a given quantity. If no data are observed, the result is NaN. \\
+Maximize        & Find the maximum value of a given quantity. If no data are observed, the result is NaN. \\
+Quantile        & Accumulate an adaptively binned histogram to compute approximate quantiles, such as the median. \\\hline
+Bag             & Accumulate raw data up to an optional limit, at which point only the total number is preserved. \\\hline
+Bin             & Split a given quantity into equally spaced bins between specified limits and fill only one bin per datum. \\
+SparselyBin     & Split a quantity into equally spaced bins, filling only one bin per datum and creating new bins as necessary. \\
+CentrallyBin    & Split a quantity into bins defined by a set of bin centers, filling only one datum per bin with no overflows or underflows. \\
+AdaptivelyBin   & Split a quanity into bins dynamically with a clustering algorithm, filling only one datum per bin with no overflows or underflows. \\\hline
+Fraction        & Accumulate two containers, one with all data (denominator), and one with data that pass a given selection (numerator). \\
+Stack           & Accumulate a suite containers, filling all that are above a given cut on a given expression. \\
+Partition       & Accumulate a suite containers, filling the one that is between a pair of given cuts on a given expression. \\
+Categorize      & Split a given quantity by its categorical (string-based) value and fill only one category per datum. \\\hline
+Label           & Accumulate any number of containers of the SAME type and label them with strings. Every one is filled with every input datum. \\
+UntypedLabel    & Accumulate containers of any type except Count and label them with strings. Every one is filled with every input datum. \\
+Index           & Accumulate any number of containers of the SAME type anonymously in a list. Every one is filled with every input datum. \\
+Branch          & Accumulate containers of DIFFERENT types, indexed by i0 through i9. Every one is filled with every input datum. \\\hline
+\end{tabular}
+\end{minipage}
 \end{frame}
 
 \end{document}
